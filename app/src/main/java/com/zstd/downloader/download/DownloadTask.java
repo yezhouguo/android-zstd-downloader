@@ -2,9 +2,6 @@ package com.zstd.downloader.download;
 
 import com.zstd.downloader.Constants;
 
-import org.json.JSONException;
-import org.json.JSONObject;
-
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -12,7 +9,6 @@ import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 
 import okhttp3.Call;
 import okhttp3.OkHttpClient;
@@ -30,6 +26,7 @@ public class DownloadTask {
     private final DownloadMetadata metadata;
     private final File outputFile;
     private final ProgressCallback progressCallback;
+    private final ChunkCallback chunkCallback;
     private final AtomicBoolean isPaused;
     private final AtomicBoolean isCancelled;
     private Call currentCall;
@@ -40,10 +37,15 @@ public class DownloadTask {
         void onError(Throwable error);
     }
 
+    public interface ChunkCallback {
+        void onChunk(byte[] chunk, int size, long totalDownloaded);
+    }
+
     private DownloadTask(Builder builder) {
         this.metadata = builder.metadata;
         this.outputFile = builder.outputFile;
         this.progressCallback = builder.progressCallback;
+        this.chunkCallback = builder.chunkCallback;
         this.isPaused = new AtomicBoolean(false);
         this.isCancelled = new AtomicBoolean(false);
 
@@ -57,16 +59,12 @@ public class DownloadTask {
                 .build();
     }
 
-    /**
-     * Starts or resumes the download
-     */
     public void start() {
+        isPaused.set(false);
+        isCancelled.set(false);
         new Thread(this::runDownload).start();
     }
 
-    /**
-     * Pauses the download gracefully
-     */
     public void pause() {
         isPaused.set(true);
         if (currentCall != null) {
@@ -74,9 +72,6 @@ public class DownloadTask {
         }
     }
 
-    /**
-     * Cancels the download and cleans up
-     */
     public void cancel() {
         isCancelled.set(true);
         isPaused.set(true);
@@ -85,66 +80,45 @@ public class DownloadTask {
         }
     }
 
-    /**
-     * Resumes a paused download
-     */
     public void resume() {
         isPaused.set(false);
         start();
     }
 
-    /**
-     * @return true if the download is currently paused
-     */
     public boolean isPaused() {
         return isPaused.get();
     }
 
-    /**
-     * @return true if the download is cancelled
-     */
     public boolean isCancelled() {
         return isCancelled.get();
     }
 
-    /**
-     * @return true if the download is running (not paused and not cancelled)
-     */
     public boolean isRunning() {
         return !isPaused.get() && !isCancelled.get();
     }
 
     private void runDownload() {
         try {
-            // First, make a HEAD request to get file info and check Range support
             ServerInfo serverInfo = fetchServerInfo();
 
             if (!serverInfo.supportsRange && metadata.getDownloadedBytes() > 0) {
-                // Server doesn't support range requests but we have partial data
-                // Can't resume, need to start fresh
                 progressCallback.onError(new IOException("Server doesn't support Range requests, cannot resume"));
                 return;
             }
 
-            // Now perform the actual download
             performDownload(serverInfo);
 
         } catch (IOException e) {
             if (isCancelled.get()) {
-                // Cancelled by user, not an error
                 return;
             }
             if (isPaused.get() && e instanceof InterruptedIOException) {
-                // Paused, not an error
                 return;
             }
             progressCallback.onError(e);
         }
     }
 
-    /**
-     * Fetches server information via HEAD request
-     */
     private ServerInfo fetchServerInfo() throws IOException {
         Request headRequest = new Request.Builder()
                 .url(metadata.getUrl())
@@ -162,19 +136,10 @@ public class DownloadTask {
         info.etag = response.header("ETag");
         info.lastModified = response.header("Last-Modified");
 
-        // If we didn't have total bytes before, use Content-Length
-        if (metadata.getTotalBytes() <= 0 && info.contentLength > 0) {
-            // Can't update metadata directly, caller will handle this
-            info.contentLength = info.contentLength;
-        }
-
         response.close();
         return info;
     }
 
-    /**
-     * Performs the actual download with Range support
-     */
     private void performDownload(ServerInfo serverInfo) throws IOException {
         long downloadedBytes = metadata.getDownloadedBytes();
         long totalBytes = metadata.getTotalBytes() > 0 ? metadata.getTotalBytes() : serverInfo.contentLength;
@@ -183,10 +148,8 @@ public class DownloadTask {
                 .url(metadata.getUrl())
                 .get();
 
-        // Add Range header for resume
         if (downloadedBytes > 0 && serverInfo.supportsRange) {
             requestBuilder.header("Range", metadata.getRangeHeaderValue());
-            // Add validation headers
             if (metadata.getEtag() != null) {
                 requestBuilder.header("If-Match", metadata.getEtag());
             }
@@ -208,23 +171,19 @@ public class DownloadTask {
             throw new IOException("Empty response body");
         }
 
-        // Update total bytes if we got it from Content-Length
         if (totalBytes <= 0) {
             totalBytes = body.contentLength();
         }
 
-        // Create output stream (append mode if resuming)
         boolean appendMode = downloadedBytes > 0 && response.code() == 206;
         try (InputStream input = body.byteStream();
              FileOutputStream output = new FileOutputStream(outputFile, appendMode)) {
 
             byte[] buffer = new byte[Constants.DOWNLOAD_BUFFER_SIZE];
             int bytesRead;
-            long lastProgressUpdate = 0;
             long lastUpdateTime = System.currentTimeMillis();
 
             while ((bytesRead = input.read(buffer)) != -1) {
-                // Check for pause/cancel
                 if (isPaused.get()) {
                     throw new InterruptedIOException("Download paused");
                 }
@@ -235,7 +194,11 @@ public class DownloadTask {
                 output.write(buffer, 0, bytesRead);
                 downloadedBytes += bytesRead;
 
-                // Throttled progress updates
+                // Call chunk callback for streaming decompression
+                if (chunkCallback != null) {
+                    chunkCallback.onChunk(buffer, bytesRead, downloadedBytes);
+                }
+
                 long now = System.currentTimeMillis();
                 if (now - lastUpdateTime >= Constants.MIN_PROGRESS_UPDATE_INTERVAL_MS) {
                     progressCallback.onProgress(downloadedBytes, totalBytes);
@@ -243,15 +206,12 @@ public class DownloadTask {
                 }
             }
 
-            // Final progress update
             progressCallback.onProgress(downloadedBytes, totalBytes);
 
-            // Verify download completion
             if (totalBytes > 0 && downloadedBytes != totalBytes) {
                 throw new IOException("Download incomplete: " + downloadedBytes + " of " + totalBytes + " bytes");
             }
 
-            // Sync to storage
             output.getFD().sync();
 
         } finally {
@@ -261,9 +221,6 @@ public class DownloadTask {
         progressCallback.onComplete(outputFile);
     }
 
-    /**
-     * Parses Content-Length header value
-     */
     private long parseContentLength(String value) {
         if (value == null || value.isEmpty()) {
             return -1;
@@ -275,9 +232,6 @@ public class DownloadTask {
         }
     }
 
-    /**
-     * Server information from HEAD request
-     */
     private static class ServerInfo {
         long contentLength = -1;
         boolean supportsRange = false;
@@ -293,6 +247,7 @@ public class DownloadTask {
         private DownloadMetadata metadata;
         private File outputFile;
         private ProgressCallback progressCallback;
+        private ChunkCallback chunkCallback;
 
         public Builder metadata(DownloadMetadata metadata) {
             this.metadata = metadata;
@@ -306,6 +261,11 @@ public class DownloadTask {
 
         public Builder progressCallback(ProgressCallback callback) {
             this.progressCallback = callback;
+            return this;
+        }
+
+        public Builder chunkCallback(ChunkCallback callback) {
+            this.chunkCallback = callback;
             return this;
         }
 
