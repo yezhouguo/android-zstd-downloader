@@ -4,7 +4,6 @@ import android.os.Handler;
 import android.os.Looper;
 
 import com.zstd.downloader.decompression.BatchDecompressionHandler;
-import com.zstd.downloader.decompression.StreamingDecompressionHandler;
 import com.zstd.downloader.decompression.ZstdDecompressor;
 import com.zstd.downloader.progress.DownloadState;
 import com.zstd.downloader.progress.ProgressCalculator;
@@ -26,13 +25,15 @@ public class DownloadManager {
     private final Handler mainHandler;
 
     private DownloadTask downloadTask;
-    private StreamingDecompressionHandler streamingHandler;
     private BatchDecompressionHandler batchHandler;
 
     private final AtomicReference<DownloadState> currentState;
     private final AtomicReference<DownloadMetadata> currentMetadata;
     private final AtomicReference<ProgressCalculator> progressCalculator;
     private ProgressEvent lastProgressEvent;
+
+    private long currentDownloadedBytes;
+    private long currentTotalBytes;
 
     private DownloadManagerListener listener;
 
@@ -51,11 +52,10 @@ public class DownloadManager {
         this.currentMetadata = new AtomicReference<>();
         this.progressCalculator = new AtomicReference<>(ProgressCalculator.forStreaming(-1));
         this.lastProgressEvent = ProgressEvent.idle();
+        this.currentDownloadedBytes = 0;
+        this.currentTotalBytes = -1;
     }
 
-    /**
-     * Starts a new download with the specified parameters
-     */
     public void startDownload(String url, boolean streamingMode) throws IOException {
         if (currentState.get() == DownloadState.DOWNLOADING ||
             currentState.get() == DownloadState.DECOMPRESSING) {
@@ -82,16 +82,13 @@ public class DownloadManager {
                 .statusMessage("Starting download...")
                 .build());
 
-        if (streamingMode) {
-            startStreamingDownload(metadata);
-        } else {
-            startBatchDownload(metadata);
-        }
+        // Reset counters
+        currentDownloadedBytes = 0;
+        currentTotalBytes = -1;
+
+        startDownload(metadata);
     }
 
-    /**
-     * Resumes a paused or interrupted download
-     */
     public void resumeDownload() throws IOException {
         if (currentState.get() != DownloadState.PAUSED) {
             throw new IllegalStateException("No paused download to resume");
@@ -116,16 +113,9 @@ public class DownloadManager {
                 .statusMessage("Resuming download...")
                 .build());
 
-        if (metadata.isStreamingMode()) {
-            startStreamingDownload(metadata);
-        } else {
-            startBatchDownload(metadata);
-        }
+        startDownload(metadata);
     }
 
-    /**
-     * Pauses the current download
-     */
     public void pauseDownload() {
         DownloadState state = currentState.get();
         if (state != DownloadState.DOWNLOADING && state != DownloadState.DECOMPRESSING) {
@@ -138,17 +128,13 @@ public class DownloadManager {
             downloadTask.pause();
         }
 
-        if (streamingHandler != null) {
-            streamingHandler.pause();
-        }
-
         if (batchHandler != null) {
             batchHandler.pause();
         }
 
         DownloadMetadata metadata = currentMetadata.get();
         if (metadata != null) {
-            long downloadedBytes = progressCalculator.get().getCurrentDownloadedBytes();
+            long downloadedBytes = currentDownloadedBytes;
             metadataStorage.updateProgress(downloadedBytes);
             metadataStorage.save(metadata.withDownloadedBytes(downloadedBytes));
         }
@@ -159,16 +145,9 @@ public class DownloadManager {
                 .build());
     }
 
-    /**
-     * Cancels the current download and cleans up
-     */
     public void cancelDownload() {
         if (downloadTask != null) {
             downloadTask.cancel();
-        }
-
-        if (streamingHandler != null) {
-            streamingHandler.cancel();
         }
 
         if (batchHandler != null) {
@@ -203,81 +182,7 @@ public class DownloadManager {
         return metadataStorage.hasMetadata() && metadataStorage.canResume();
     }
 
-    private void startStreamingDownload(DownloadMetadata metadata) throws IOException {
-        File tempCompressedFile = fileStorageManager.getFile(metadata.getTempCompressedPath());
-        File tempDecompressedFile = fileStorageManager.getFile(metadata.getTempDecompressedPath());
-        File outputFile = fileStorageManager.getFile(metadata.getOutputPath());
-
-        streamingHandler = StreamingDecompressionHandler.builder()
-                .outputFile(outputFile)
-                .tempDecompressedFile(tempDecompressedFile)
-                .totalBytes(-1)
-                .progressCallback(new StreamingDecompressionHandler.ProgressCallback() {
-                    @Override
-                    public void onProgress(ProgressEvent event) {
-                        notifyProgress(event);
-                    }
-
-                    @Override
-                    public void onComplete(File file) {
-                        setState(DownloadState.COMPLETED);
-                        notifyProgress(ProgressEvent.completed(file != null ? file.length() : 0));
-                        if (listener != null) {
-                            listener.onComplete(file);
-                        }
-                    }
-
-                    @Override
-                    public void onError(Throwable error) {
-                        handleError(error);
-                    }
-                })
-                .build();
-
-        streamingHandler.open();
-
-        downloadTask = DownloadTask.builder()
-                .metadata(metadata)
-                .outputFile(tempCompressedFile)
-                .chunkCallback(new DownloadTask.ChunkCallback() {
-                    @Override
-                    public void onChunk(byte[] chunk, int size, long totalDownloaded) {
-                        try {
-                            // Create a new array with only the actual data
-                            byte[] actualChunk = new byte[size];
-                            System.arraycopy(chunk, 0, actualChunk, 0, size);
-                            streamingHandler.processChunk(actualChunk, totalDownloaded);
-                        } catch (IOException e) {
-                            handleError(e);
-                        }
-                    }
-                })
-                .progressCallback(new DownloadTask.ProgressCallback() {
-                    @Override
-                    public void onProgress(long downloadedBytes, long totalBytes) {
-                        // Progress handled by chunk callback
-                    }
-
-                    @Override
-                    public void onComplete(File file) {
-                        try {
-                            streamingHandler.complete();
-                        } catch (IOException e) {
-                            handleError(e);
-                        }
-                    }
-
-                    @Override
-                    public void onError(Throwable error) {
-                        handleError(error);
-                    }
-                })
-                .build();
-
-        downloadTask.start();
-    }
-
-    private void startBatchDownload(DownloadMetadata metadata) throws IOException {
+    private void startDownload(DownloadMetadata metadata) throws IOException {
         File tempCompressedFile = fileStorageManager.getFile(metadata.getTempCompressedPath());
 
         downloadTask = DownloadTask.builder()
@@ -286,6 +191,11 @@ public class DownloadManager {
                 .progressCallback(new DownloadTask.ProgressCallback() {
                     @Override
                     public void onProgress(long downloadedBytes, long totalBytes) {
+                        currentDownloadedBytes = downloadedBytes;
+                        if (totalBytes > 0) {
+                            currentTotalBytes = totalBytes;
+                        }
+
                         progressCalculator.get().update(downloadedBytes, 0, DownloadState.DOWNLOADING);
                         notifyProgress(progressCalculator.get().createProgressEvent());
                         metadataStorage.updateProgress(downloadedBytes);
@@ -293,8 +203,9 @@ public class DownloadManager {
 
                     @Override
                     public void onComplete(File compressedFile) {
+                        // Download complete, start decompression
                         setState(DownloadState.DECOMPRESSING);
-                        startBatchDecompression(compressedFile, metadata);
+                        startDecompression(compressedFile, metadata);
                     }
 
                     @Override
@@ -307,7 +218,7 @@ public class DownloadManager {
         downloadTask.start();
     }
 
-    private void startBatchDecompression(File compressedFile, DownloadMetadata metadata) {
+    private void startDecompression(File compressedFile, DownloadMetadata metadata) {
         File outputFile = fileStorageManager.getFile(metadata.getOutputPath());
         File tempDecompressedFile = fileStorageManager.getFile(metadata.getTempDecompressedPath());
 

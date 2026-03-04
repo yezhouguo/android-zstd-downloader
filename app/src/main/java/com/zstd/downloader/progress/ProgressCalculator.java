@@ -74,6 +74,21 @@ public class ProgressCalculator {
     }
 
     /**
+     * Calculates progress for display purposes
+     * Returns a value that indicates progress when total size is known,
+     * or returns a special value to indicate "in progress with unknown total"
+     *
+     * @return Display progress (0.0 to 1.0), or -1.0 if unknown total but downloading
+     */
+    public double calculateDisplayProgress() {
+        if (totalDownloadBytes <= 0) {
+            // Unknown total size - return -1 to indicate "downloading but unknown progress %"
+            return currentDownloadedBytes > 0 ? -0.5 : 0.0;
+        }
+        return Math.min(1.0, (double) currentDownloadedBytes / (double) totalDownloadBytes);
+    }
+
+    /**
      * Calculates decompression progress (0.0 to 1.0)
      *
      * @return Decompression progress
@@ -135,6 +150,12 @@ public class ProgressCalculator {
         double downloadProgress = calculateDownloadProgress();
         double decompressionProgress = calculateDecompressionProgress();
         double overallProgress = calculateOverallProgress();
+
+        // When total size is unknown, use a small positive value for overallProgress
+        // so the progress bar shows some activity instead of staying at 0
+        if (totalDownloadBytes <= 0 && currentDownloadedBytes > 0) {
+            overallProgress = 0.01; // Show 1% to indicate progress
+        }
 
         String statusMessage = generateStatusMessage();
 
