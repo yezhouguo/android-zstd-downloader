@@ -13,7 +13,7 @@
     <string name="status_completed">Completed</string>
     <string name="status_paused">Paused</string>
     <string name="status_failed">Failed</string>
-    <string name="progress_bytes">%s / %s</string>
+    <string name="progress_bytes" formatted="false">%s / %s</string>
     <string name="error_invalid_url">Invalid URL</string>
     <string name="error_download_failed">Download failed</string>
     <string name="error_decompression_failed">Decompression failed</string>

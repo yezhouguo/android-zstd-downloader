@@ -260,7 +260,7 @@ public class DownloadManager {
                     @Override
                     public void onComplete(File file) {
                         setState(DownloadState.COMPLETED);
-                        notifyProgress(ProgressEvent.completed(event.getDecompressedBytes()));
+                        notifyProgress(ProgressEvent.completed(file != null ? file.length() : 0));
                         if (listener != null) {
                             listener.onComplete(file);
                         }
@@ -366,7 +366,7 @@ public class DownloadManager {
                     @Override
                     public void onComplete(File file) {
                         setState(DownloadState.COMPLETED);
-                        notifyProgress(ProgressEvent.completed(event.getDecompressedBytes()));
+                        notifyProgress(ProgressEvent.completed(file != null ? file.length() : 0));
                         if (listener != null) {
                             listener.onComplete(file);
                         }

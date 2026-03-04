@@ -262,10 +262,20 @@ public class ZstdDecompressor {
 
             // Decompress the chunk
             try {
-                // Decompress into buffer
-                int decompressedSize = (int) Zstd.decompress(compressedChunk, 0, compressedRead,
-                                                             buffer, 0, buffer.length);
-                bufferLength = decompressedSize;
+                // Create a new array with only the actual data read
+                byte[] actualData = new byte[compressedRead];
+                System.arraycopy(compressedChunk, 0, actualData, 0, compressedRead);
+
+                // Get the decompressed size first
+                int decompressedSize = (int) Zstd.decompressedSize(actualData);
+
+                // Allocate buffer and decompress
+                if (decompressedSize > 0) {
+                    byte[] dest = new byte[decompressedSize];
+                    int size = (int) Zstd.decompress(actualData, dest);
+                    bufferLength = Math.min(size, buffer.length);
+                    System.arraycopy(dest, 0, buffer, 0, bufferLength);
+                }
             } catch (Exception e) {
                 // If decompression fails, might be end of stream or multi-frame
                 eof = true;

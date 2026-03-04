@@ -158,7 +158,7 @@ public class DownloadTask {
 
         ServerInfo info = new ServerInfo();
         info.contentLength = parseContentLength(response.header("Content-Length"));
-        info.acceptsRanges = "bytes".equalsIgnoreCase(response.header("Accept-Ranges"));
+        info.supportsRange = "bytes".equalsIgnoreCase(response.header("Accept-Ranges"));
         info.etag = response.header("ETag");
         info.lastModified = response.header("Last-Modified");
 
@@ -184,7 +184,7 @@ public class DownloadTask {
                 .get();
 
         // Add Range header for resume
-        if (downloadedBytes > 0 && serverInfo.acceptsRanges) {
+        if (downloadedBytes > 0 && serverInfo.supportsRange) {
             requestBuilder.header("Range", metadata.getRangeHeaderValue());
             // Add validation headers
             if (metadata.getEtag() != null) {
