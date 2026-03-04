@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Zstd Downloader</string>
+    <string name="url_hint">Enter download URL</string>
+    <string name="streaming_mode">Streaming Decompression</string>
+    <string name="start_download">Start Download</string>
+    <string name="pause">Pause</string>
+    <string name="resume">Resume</string>
+    <string name="cancel">Cancel</string>
+    <string name="status_idle">Ready to download</string>
+    <string name="status_downloading">Downloading…</string>
+    <string name="status_decompressing">Decompressing…</string>
+    <string name="status_completed">Completed</string>
+    <string name="status_paused">Paused</string>
+    <string name="status_failed">Failed</string>
+    <string name="progress_bytes">%s / %s</string>
+    <string name="error_invalid_url">Invalid URL</string>
+    <string name="error_download_failed">Download failed</string>
+    <string name="error_decompression_failed">Decompression failed</string>
+    <string name="error_file_not_found">File not found</string>
+    <string name="error_no_resume_support">Resume not supported by server</string>
+</resources>
